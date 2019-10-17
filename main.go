@@ -99,11 +99,11 @@ func main() {
 
 	LOG, err = InitLog()
 	if err != nil {
-		fmt.Println("init log error\n")
+		fmt.Println("init log error")
 		os.Exit(1)
 	}
 
-	LOG.Println(">>>>>>>>>>>>\n")
+	LOG.Println(">>>>>>>>>>>>")
 	LOG.Printf("server is starting:local_port:%d ask_port:%d\n", server.local_port, server.ask_port)
 
 	server.conf.Initconf()
@@ -113,17 +113,21 @@ func main() {
 	}
 
 	LOG.Printf("remote_address:%s:%d\n", server.conf.ip, server.conf.port)
-	LOG.Println("<<<<<<<<<<<<\n")
+	LOG.Println("<<<<<<<<<<<<")
 
-	LOG.Println("server try connect ...\n")
+	LOG.Println("server try connect ...")
 
 	deadclock = time.NewTimer(3 * time.Minute)
 	go killThis()
 	if server.ask_port != 0 {
-		tcpAddr, _ := net.ResolveTCPAddr("tcp4", "127.0.0.1:"+os.Args[1])
-
+		tcpAddr, err := net.ResolveTCPAddr("tcp4", "127.0.0.1:"+strconv.Itoa(server.local_port))
+		if err != nil {
+			LOG.Printf("resolve tcp addr error %s\n", "127.0.0.1:"+strconv.Itoa(server.local_port))
+			os.Exit(1)
+		}
 		local_conn, err = net.DialTCP("tcp", nil, tcpAddr)
 		for err != nil {
+			LOG.Printf("connect error %s\n", "127.0.0.1:"+strconv.Itoa(server.local_port))
 			time.Sleep(5 * time.Second)
 			local_conn, err = net.DialTCP("tcp", nil, tcpAddr)
 		}
@@ -140,7 +144,7 @@ func main() {
 		remote_conn, err = net.DialTCP("tcp", nil, tcpAddr)
 	}
 
-	LOG.Println("server started ...\n")
+	LOG.Println("server started ...")
 
 	if server.ask_port == 0 {
 		g_wg.Add(1)
@@ -148,8 +152,8 @@ func main() {
 	} else {
 		g_wg.Add(2)
 		go server.remote_data_process()
-		go server.master_main_process()
+		go server.local_data_process()
 	}
 	g_wg.Wait()
-	LOG.Println("... server end\n")
+	LOG.Println("... server end")
 }
