@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -21,8 +22,9 @@ const (
 )
 
 var (
-	spwan_child_num int32 = 0
-	deadclock_lock  sync.Mutex
+	spwan_child_num_total int32 = 0
+	spwan_child_num       int32 = 0
+	deadclock_lock        sync.Mutex
 )
 
 type InterProcessHeader struct {
@@ -37,8 +39,8 @@ func (s *ServerStat) spwan() {
 	//just a very large number
 	deadclock.Reset(100 * 265 * 24 * time.Hour)
 	deadclock_lock.Unlock()
-
-	cmd := exec.Command("./data_exchange_local_go", strconv.Itoa(s.local_port), strconv.Itoa(s.ask_port))
+	n := atomic.AddInt32(&spwan_child_num_total, 1)
+	cmd := exec.Command("./data_exchange_local_go", strconv.Itoa(s.local_port), strconv.Itoa(s.ask_port), strconv.Itoa(int(n)))
 	cmd.Start()
 	cmd.Wait()
 
@@ -91,7 +93,7 @@ func (s ServerStat) master_heartbeat() {
 		}
 	}
 }
-func (s *ServerStat) master_main_process() {
+func (s *ServerStat) master_main_process(g_wg *sync.WaitGroup) {
 
 	head := InterProcessHeader{CMD_REQUEST_PORT, 0}
 	buf := &bytes.Buffer{}
@@ -141,11 +143,61 @@ func send_data(conn *net.TCPConn, data []byte, wg *sync.WaitGroup, err *error) {
 	_, *err = conn.Write(data)
 	wg.Done()
 }
-func (s *ServerStat) local_data_process() {
+func (s *ServerStat) pre_remote() error {
+	//send CMD_ASK_PORT message
+	var err error
+	port := strconv.Itoa(s.ask_port)
+	buf := &bytes.Buffer{}
+	head := InterProcessHeader{CMD_ASK_PORT, int32(len(port))}
+
+	err = binary.Write(buf, binary.BigEndian, head)
+	if err != nil {
+		LOG.Printf("binary.Write error:%s\n", err)
+		return fmt.Errorf("%s\n", err)
+	}
+	_, err = remote_conn.Write(buf.Bytes())
+	if err != nil {
+		LOG.Printf("write error : %s\n", err)
+		return fmt.Errorf("%s\n", err)
+	}
+
+	_, err = remote_conn.Write([]byte(port))
+	if err != nil {
+		LOG.Printf("write error : %s\n", err)
+		return fmt.Errorf("%s\n", err)
+	}
+	//receive ACK message
+	head_buf := make([]byte, 8)
+	data_buf := []byte{}
+	_, err = io.ReadFull(remote_conn, head_buf)
+	if err != nil {
+		LOG.Printf("ReadFull:%s\n", err)
+		return fmt.Errorf("%s\n", err)
+	}
+	r := bytes.NewReader(head_buf)
+	binary.Read(r, binary.BigEndian, &head.cmd)
+	binary.Read(r, binary.BigEndian, &head.len)
+	if head.len > 0 {
+		data_buf = make([]byte, head.len)
+		_, err = io.ReadFull(remote_conn, data_buf)
+		if err != nil {
+			LOG.Printf("ReadFull:%s\n", err)
+			return fmt.Errorf("%s\n", err)
+		}
+	}
+	/*we don't care about the message
+	 *do_cmd(head, data_buf)
+	 */
+	LOG.Printf("remote receive cmd %d\n", head.cmd)
+
+	return nil
+}
+func (s *ServerStat) local_data_process(g_wg *sync.WaitGroup) {
 
 	var wg sync.WaitGroup
 	var send_err error
 	var buf [2000]byte
+
 	defer func() {
 		LOG.Printf("local_data_process done %s", send_err)
 		g_wg.Done()
@@ -169,65 +221,22 @@ func (s *ServerStat) local_data_process() {
 		}
 	}
 }
-func (s *ServerStat) remote_data_process() {
+func (s *ServerStat) remote_data_process(g_wg *sync.WaitGroup) {
 
-	//send CMD_ASK_PORT message
-	port := strconv.Itoa(s.ask_port)
-	buf := &bytes.Buffer{}
-	head := InterProcessHeader{CMD_ASK_PORT, int32(len(port))}
+	//now we start recv remote data and send to local port
+	var wg sync.WaitGroup
+	var send_err error
+	var bufs [2000]byte
 
 	defer func() {
 		LOG.Println("remote_data_process done")
 		g_wg.Done()
 	}()
 
-	err := binary.Write(buf, binary.BigEndian, head)
-	if err != nil {
-		LOG.Printf("binary.Write error:%s\n", err)
-		return
-	}
-	_, err = remote_conn.Write(buf.Bytes())
-	if err != nil {
-		LOG.Printf("write error : %s\n", err)
-		return
-	}
-
-	_, err = remote_conn.Write([]byte(port))
-	if err != nil {
-		LOG.Printf("write error : %s\n", err)
-		return
-	}
-	//receive ACK message
-	head_buf := make([]byte, 8)
-	data_buf := []byte{}
-	_, err = io.ReadFull(remote_conn, head_buf)
-	if err != nil {
-		LOG.Printf("ReadFull:%s\n", err)
-		return
-	}
-	r := bytes.NewReader(head_buf)
-	binary.Read(r, binary.BigEndian, &head.cmd)
-	binary.Read(r, binary.BigEndian, &head.len)
-	if head.len > 0 {
-		data_buf = make([]byte, head.len)
-		_, err = io.ReadFull(remote_conn, data_buf)
-		if err != nil {
-			LOG.Printf("ReadFull:%s\n", err)
-			return
-		}
-	}
-	/*we don't care about the message
-	 *do_cmd(head, data_buf)
-	 */
-	LOG.Printf("remote receive cmd %d\n", head.cmd)
-	//now we start recv remote data and send to local port
-	var wg sync.WaitGroup
-	var send_err error
-	var bufs [2000]byte
 	for {
 		n, err := remote_conn.Read(bufs[0:])
 		if err != nil || n == 0 {
-			LOG.Printf("local_data_process done.local rcv_err:%s len:%d\n", err, n)
+			LOG.Printf("remote_data_process done.local rcv_err:%s len:%d\n", err, n)
 			return
 		}
 		deadclock_lock.Lock()
@@ -238,7 +247,7 @@ func (s *ServerStat) remote_data_process() {
 		go send_data(local_conn, bufs[0:n], &wg, &send_err)
 		wg.Wait()
 		if send_err != nil {
-			LOG.Printf("local_data_process done.remote send_err:%s\n", send_err)
+			LOG.Printf("remote_data_process done.remote send_err:%s\n", send_err)
 			return
 		}
 	}
