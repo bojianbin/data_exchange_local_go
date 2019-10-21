@@ -192,7 +192,7 @@ func (s *ServerStat) pre_remote() error {
 
 	return nil
 }
-func (s *ServerStat) local_data_process(g_wg *sync.WaitGroup) {
+func (s *ServerStat) local_data_process(sig chan<- int) {
 
 	var wg sync.WaitGroup
 	var send_err error
@@ -200,7 +200,7 @@ func (s *ServerStat) local_data_process(g_wg *sync.WaitGroup) {
 
 	defer func() {
 		LOG.Printf("local_data_process done %s", send_err)
-		g_wg.Done()
+		sig <- 0
 	}()
 	for {
 		n, err := local_conn.Read(buf[0:])
@@ -221,7 +221,7 @@ func (s *ServerStat) local_data_process(g_wg *sync.WaitGroup) {
 		}
 	}
 }
-func (s *ServerStat) remote_data_process(g_wg *sync.WaitGroup) {
+func (s *ServerStat) remote_data_process(sig chan<- int) {
 
 	//now we start recv remote data and send to local port
 	var wg sync.WaitGroup
@@ -230,7 +230,7 @@ func (s *ServerStat) remote_data_process(g_wg *sync.WaitGroup) {
 
 	defer func() {
 		LOG.Println("remote_data_process done")
-		g_wg.Done()
+		sig <- 0
 	}()
 
 	for {

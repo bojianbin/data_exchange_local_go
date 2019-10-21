@@ -164,12 +164,15 @@ func main() {
 			LOG.Printf("server.pre_remote error:%s\n", err)
 			return
 		}
-		var g_wg sync.WaitGroup
+		sig := make(chan int)
 		//exit when any one complete
-		g_wg.Add(1)
-		go server.remote_data_process(&g_wg)
-		go server.local_data_process(&g_wg)
-		g_wg.Wait()
+		go server.remote_data_process(sig)
+		go server.local_data_process(sig)
+
+		select {
+		case <-sig:
+			break
+		}
 	}
 	LOG.Println("... server end")
 	os.Exit(0)
